@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: apiservices-backend
+    env: python
+    pythonVersion: "3.11.9"
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: ENVIRONMENT
+        value: production
+      - key: ALLOWED_ORIGINS
+        value: https://apiservices-frountend.vercel.app,https://apiservicesfrountend.vercel.app,http://localhost:3000
+
