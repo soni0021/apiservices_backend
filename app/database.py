@@ -8,43 +8,84 @@ settings = get_settings()
 
 
 def convert_postgres_url_to_asyncpg(url: str) -> str:
-    """Convert PostgreSQL URL to asyncpg-compatible format"""
+    """
+    Convert PostgreSQL URL to asyncpg-compatible format.
+    Handles various URL formats and removes unsupported parameters.
+    """
+    if not url:
+        raise ValueError("DATABASE_URL cannot be empty")
+    
     # Replace postgresql:// with postgresql+asyncpg://
     if url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+asyncpg://")
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql+asyncpg://"):
+        # Already in correct format
+        pass
+    else:
+        # If it doesn't start with postgresql://, assume it needs the prefix
+        if not url.startswith("postgresql"):
+            raise ValueError(f"Invalid DATABASE_URL format: {url[:50]}...")
     
     # Parse the URL
-    parsed = urlparse(url)
-    query_params = parse_qs(parsed.query)
+    try:
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query)
+    except Exception as e:
+        raise ValueError(f"Failed to parse DATABASE_URL: {str(e)}")
     
     # Convert sslmode to ssl parameter for asyncpg
     if "sslmode" in query_params:
-        sslmode = query_params["sslmode"][0]
+        sslmode = query_params["sslmode"][0].lower()
         del query_params["sslmode"]
-        if sslmode == "require":
+        # asyncpg uses ssl parameter, not sslmode
+        if sslmode in ["require", "prefer", "allow"]:
             query_params["ssl"] = ["require"]
-        elif sslmode == "prefer":
-            query_params["ssl"] = ["prefer"]
+        elif sslmode == "disable":
+            # Don't set ssl parameter if disabled
+            pass
     
     # Remove channel_binding as asyncpg doesn't support it
+    # This is critical for Neon and other providers that include it
     if "channel_binding" in query_params:
         del query_params["channel_binding"]
+    
+    # Remove other unsupported parameters
+    unsupported_params = ["connect_timeout", "application_name"]
+    for param in unsupported_params:
+        if param in query_params:
+            del query_params[param]
     
     # Rebuild the URL
     new_query = urlencode(query_params, doseq=True)
     new_parsed = parsed._replace(query=new_query)
-    return urlunparse(new_parsed)
+    converted_url = urlunparse(new_parsed)
+    
+    return converted_url
 
 
 # Create async engine with connection pooling
-db_url = convert_postgres_url_to_asyncpg(settings.DATABASE_URL)
+# Convert database URL and handle errors gracefully
+try:
+    db_url = convert_postgres_url_to_asyncpg(settings.DATABASE_URL)
+except Exception as e:
+    raise ValueError(
+        f"Failed to convert DATABASE_URL: {str(e)}\n"
+        f"Please check your DATABASE_URL in .env file or environment variables."
+    ) from e
+
+# Create engine with proper SSL configuration for Neon and other cloud providers
 engine = create_async_engine(
     db_url,
     echo=settings.ENVIRONMENT == "development",
     pool_size=10,
     max_overflow=20,
-    pool_pre_ping=True,
-    pool_recycle=3600,
+    pool_pre_ping=True,  # Verify connections before using
+    pool_recycle=3600,   # Recycle connections after 1 hour
+    connect_args={
+        "server_settings": {
+            "application_name": "apiservices_backend",
+        }
+    } if settings.ENVIRONMENT == "production" else {},
 )
 
 # Create async session factory
