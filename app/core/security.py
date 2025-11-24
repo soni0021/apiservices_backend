@@ -5,6 +5,8 @@ import bcrypt
 from app.config import get_settings
 import secrets
 import hashlib
+from cryptography.fernet import Fernet
+import base64
 
 settings = get_settings()
 
@@ -78,4 +80,26 @@ def hash_api_key(api_key: str) -> str:
 def verify_api_key(plain_key: str, key_hash: str) -> bool:
     """Verify an API key against its hash"""
     return hashlib.sha256(plain_key.encode()).hexdigest() == key_hash
+
+
+def encrypt_api_key(api_key: str) -> str:
+    """Encrypt API key for storage (using JWT secret as base for key)"""
+    # Use JWT secret to create encryption key
+    key_material = settings.JWT_SECRET_KEY.encode()[:32].ljust(32, b'0')
+    key = base64.urlsafe_b64encode(key_material)
+    fernet = Fernet(key)
+    encrypted = fernet.encrypt(api_key.encode())
+    return encrypted.decode()
+
+
+def decrypt_api_key(encrypted_key: str) -> Optional[str]:
+    """Decrypt API key from storage"""
+    try:
+        key_material = settings.JWT_SECRET_KEY.encode()[:32].ljust(32, b'0')
+        key = base64.urlsafe_b64encode(key_material)
+        fernet = Fernet(key)
+        decrypted = fernet.decrypt(encrypted_key.encode())
+        return decrypted.decode()
+    except Exception:
+        return None
 

@@ -26,6 +26,7 @@ from app.websocket.events import create_user_registration_event, create_subscrip
 from pydantic import BaseModel
 from sqlalchemy.orm import selectinload
 from decimal import Decimal
+import uuid
 
 router = APIRouter()
 
@@ -585,8 +586,11 @@ async def list_subscriptions(
             "id": sub.id,
             "user_id": sub.user_id,
             "user_email": sub.user.email if sub.user else None,
+            "user_name": sub.user.full_name if sub.user else None,
+            "user_status": sub.user.status.value if sub.user else None,
             "service_id": sub.service_id,
             "service_name": sub.service.name if sub.service else None,
+            "service_slug": sub.service.slug if sub.service else None,
             "status": sub.status.value,
             "credits_allocated": float(sub.credits_allocated),
             "credits_remaining": float(sub.credits_remaining),
@@ -807,6 +811,206 @@ async def list_transactions(
     ]
 
 
+# Admin API Key Management
+from app.schemas.marketplace import AdminAPIKeyGenerateRequest, APIKeyResponse
+from app.models.api_key import ApiKey, ApiKeyStatus
+from app.core.security import generate_api_key
+
+@router.post("/api-keys/generate", response_model=APIKeyResponse, status_code=status.HTTP_201_CREATED)
+async def admin_generate_api_key(
+    key_request: AdminAPIKeyGenerateRequest,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin generates API key for a user with service access and whitelist URLs"""
+    try:
+        # Verify user exists
+        user_result = await db.execute(select(User).where(User.id == key_request.user_id))
+        target_user = user_result.scalar_one_or_none()
+        
+        if not target_user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        
+        # Validate service_ids
+        if not key_request.service_ids or len(key_request.service_ids) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one service ID must be provided"
+            )
+        
+        # Check for all services access
+        if "*" in key_request.service_ids:
+            service_ids = ["*"]
+            primary_service_id = None
+        else:
+            # Validate each service exists
+            service_ids = key_request.service_ids
+            for service_id in service_ids:
+                svc_result = await db.execute(select(Service).where(Service.id == service_id))
+                service = svc_result.scalar_one_or_none()
+                if not service:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Service {service_id} not found"
+                    )
+            primary_service_id = service_ids[0] if len(service_ids) == 1 else None
+        
+        # Generate API key
+        full_key, key_hash, key_prefix = generate_api_key("sk_live")
+        
+        # Encrypt full key for storage
+        from app.core.security import encrypt_api_key
+        encrypted_key = encrypt_api_key(full_key)
+        
+        # Create API key record
+        api_key = ApiKey(
+            user_id=key_request.user_id,
+            service_id=primary_service_id,
+            subscription_id=None,  # Admin-generated keys don't require subscription
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            name=key_request.name,
+            status=ApiKeyStatus.ACTIVE,
+            allowed_services=service_ids,
+            whitelist_urls=key_request.whitelist_urls or [],
+            encrypted_key=encrypted_key
+        )
+        
+        db.add(api_key)
+        await db.commit()
+        await db.refresh(api_key)
+        
+        # Load services for response
+        services_response = []
+        if "*" not in service_ids:
+            for service_id in service_ids:
+                svc_result = await db.execute(select(Service).where(Service.id == service_id))
+                svc = svc_result.scalar_one_or_none()
+                if svc:
+                    updated_at = svc.updated_at if svc.updated_at else svc.created_at
+                    services_response.append(ServiceResponse(
+                        id=svc.id,
+                        name=svc.name,
+                        slug=svc.slug,
+                        category_id=svc.category_id,
+                        description=svc.description,
+                        endpoint_path=svc.endpoint_path,
+                        request_schema=svc.request_schema,
+                        response_schema=svc.response_schema,
+                        price_per_call=float(svc.price_per_call),
+                        is_active=svc.is_active,
+                        created_at=svc.created_at,
+                        updated_at=updated_at,
+                        category=None,
+                        industries=None
+                    ))
+        
+        return APIKeyResponse(
+            id=api_key.id,
+            service_id=api_key.service_id,
+            subscription_id=api_key.subscription_id,
+            key_prefix=api_key.key_prefix,
+            full_key=full_key,  # Only shown once
+            name=api_key.name,
+            status=api_key.status.value,
+            allowed_services=service_ids,
+            whitelist_urls=api_key.whitelist_urls,
+            last_used_at=api_key.last_used_at,
+            created_at=api_key.created_at,
+            service=services_response[0] if len(services_response) == 1 else None,
+            services=services_response if len(services_response) > 0 else None
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error generating API key: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate API key: {str(e)}"
+        )
+
+
+@router.get("/users/{user_id}/api-keys", response_model=List[APIKeyResponse])
+async def get_user_api_keys(
+    user_id: str,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all API keys for a specific user"""
+    result = await db.execute(
+        select(ApiKey)
+        .where(ApiKey.user_id == user_id)
+        .options(selectinload(ApiKey.service))
+        .order_by(ApiKey.created_at.desc())
+    )
+    api_keys = result.scalars().all()
+    
+    response_list = []
+    for key in api_keys:
+        services_list = []
+        if key.allowed_services:
+            if "*" not in key.allowed_services:
+                for svc_id in key.allowed_services:
+                    svc_result = await db.execute(select(Service).where(Service.id == svc_id))
+                    svc = svc_result.scalar_one_or_none()
+                    if svc:
+                        services_list.append(ServiceResponse(
+                            id=svc.id,
+                            name=svc.name,
+                            slug=svc.slug,
+                            category_id=svc.category_id,
+                            description=svc.description,
+                            endpoint_path=svc.endpoint_path,
+                            request_schema=svc.request_schema,
+                            response_schema=svc.response_schema,
+                            price_per_call=float(svc.price_per_call),
+                            is_active=svc.is_active,
+                            created_at=svc.created_at,
+                            updated_at=svc.updated_at if svc.updated_at else svc.created_at,
+                            category=None,
+                            industries=None
+                        ))
+        
+        single_service = None
+        if key.service:
+            single_service = ServiceResponse(
+                id=key.service.id,
+                name=key.service.name,
+                slug=key.service.slug,
+                category_id=key.service.category_id,
+                description=key.service.description,
+                endpoint_path=key.service.endpoint_path,
+                request_schema=key.service.request_schema,
+                response_schema=key.service.response_schema,
+                price_per_call=float(key.service.price_per_call),
+                is_active=key.service.is_active,
+                created_at=key.service.created_at,
+                updated_at=key.service.updated_at,
+                category=None,
+                industries=None
+            )
+        
+        response_list.append(APIKeyResponse(
+            id=key.id,
+            service_id=key.service_id,
+            subscription_id=key.subscription_id,
+            key_prefix=key.key_prefix,
+            full_key=None,  # Never return full key in list
+            name=key.name,
+            status=key.status.value,
+            allowed_services=key.allowed_services,
+            whitelist_urls=key.whitelist_urls,
+            last_used_at=key.last_used_at,
+            created_at=key.created_at,
+            service=single_service,
+            services=services_list if services_list else None
+        ))
+    
+    return response_list
+
+
 @router.get("/realtime-stats")
 async def get_realtime_stats(
     current_admin: User = Depends(get_current_admin_user),
@@ -842,5 +1046,117 @@ async def get_realtime_stats(
         "total_api_calls": total_calls,
         "total_revenue": float(total_revenue),
         "total_credits_purchased": float(total_credits)
+    }
+
+
+# Credit Management Endpoints
+class CreditAllocation(BaseModel):
+    """Admin allocates credits to user"""
+    credits_amount: Decimal
+    amount_paid: Optional[Decimal] = None  # Optional: track payment if any
+    notes: Optional[str] = None
+
+
+@router.post("/users/{user_id}/credits")
+async def allocate_credits_to_user(
+    user_id: str,
+    credit_data: CreditAllocation,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin allocates credits to a user (with flexible pricing)"""
+    # Get user
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    # Add credits to user
+    user.total_credits += credit_data.credits_amount
+    
+    # Create transaction record if payment info provided
+    if credit_data.amount_paid and credit_data.amount_paid > 0:
+        transaction = Transaction(
+            user_id=user_id,
+            amount_paid=credit_data.amount_paid,
+            credits_purchased=credit_data.credits_amount,
+            payment_method="admin_allocation",
+            payment_status=PaymentStatus.COMPLETED,
+            transaction_id=f"ADMIN-{uuid.uuid4().hex[:12].upper()}"
+        )
+        db.add(transaction)
+    
+    await db.commit()
+    await db.refresh(user)
+    
+    return {
+        "message": "Credits allocated successfully",
+        "user_id": user_id,
+        "credits_allocated": float(credit_data.credits_amount),
+        "total_credits": float(user.total_credits),
+        "credits_remaining": float(user.total_credits - user.credits_used)
+    }
+
+
+class UserPricingUpdate(BaseModel):
+    """Update user's per-credit pricing"""
+    price_per_credit: Decimal  # Rupees per credit
+
+
+@router.put("/users/{user_id}/pricing")
+async def update_user_pricing(
+    user_id: str,
+    pricing_data: UserPricingUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin sets custom per-credit pricing for a specific user"""
+    # Get user
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    if pricing_data.price_per_credit <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Price per credit must be greater than 0"
+        )
+    
+    user.price_per_credit = pricing_data.price_per_credit
+    await db.commit()
+    await db.refresh(user)
+    
+    return {
+        "message": "User pricing updated successfully",
+        "user_id": user_id,
+        "price_per_credit": float(user.price_per_credit)
+    }
+
+
+@router.get("/users/{user_id}/credits")
+async def get_user_credit_info(
+    user_id: str,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get detailed credit information for a user"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "total_credits": float(user.total_credits),
+        "credits_used": float(user.credits_used),
+        "credits_remaining": float(user.total_credits - user.credits_used),
+        "price_per_credit": float(user.price_per_credit),
+        "effective_balance_value": float((user.total_credits - user.credits_used) * user.price_per_credit)
     }
 

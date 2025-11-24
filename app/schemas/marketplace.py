@@ -141,21 +141,33 @@ class CreditPurchaseResponse(BaseModel):
 
 # API Key Generation Schema
 class APIKeyGenerateRequest(BaseModel):
-    service_id: str
+    service_ids: List[str]  # Can be single or multiple service IDs
     name: str
+    # If service_ids contains "*", grants access to all services
+    whitelist_urls: Optional[List[str]] = None  # Optional: Whitelist URLs for security
+
+
+class AdminAPIKeyGenerateRequest(BaseModel):
+    user_id: str  # Admin generates key for this user
+    service_ids: List[str]  # Can be single, multiple, or ["*"] for all services
+    name: str
+    whitelist_urls: Optional[List[str]] = None  # Optional: Whitelist URLs for security
 
 
 class APIKeyResponse(BaseModel):
     id: str
-    service_id: str
+    service_id: Optional[str]  # Deprecated: for backward compatibility
     subscription_id: Optional[str]
     key_prefix: str
-    full_key: str  # Only shown once during creation
+    full_key: Optional[str] = None  # Only shown once during creation
     name: str
     status: str
+    allowed_services: Optional[List[str]] = None  # List of service IDs or ["*"]
+    whitelist_urls: Optional[List[str]] = None  # Whitelist URLs
     last_used_at: Optional[datetime]
     created_at: datetime
     service: Optional[ServiceResponse] = None
+    services: Optional[List[ServiceResponse]] = None  # Multiple services
 
     class Config:
         from_attributes = True

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, JSON, Numeric
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, JSON, Numeric, Boolean
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -22,9 +22,10 @@ class ApiUsageLog(Base):
     response_status = Column(Integer, nullable=False)
     response_time_ms = Column(Integer, nullable=False)
     data_source = Column(String)  # db, api1, api2, api3
+    success = Column(Boolean, default=False, nullable=False)  # True only for successful responses
     
-    # Credit tracking
-    credits_deducted = Column(Numeric(10, 2), default=1.0, nullable=False)
+    # Credit tracking - only deducted on success
+    credits_deducted = Column(Numeric(10, 2), default=0.0, nullable=False)  # 0 for failed requests
     credits_before = Column(Numeric(10, 2), nullable=True)
     credits_after = Column(Numeric(10, 2), nullable=True)
     

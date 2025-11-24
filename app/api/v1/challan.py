@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas.challan import ChallanRequest, ChallanResponse
@@ -13,7 +13,8 @@ router = APIRouter()
 
 @router.post("/challan", response_model=ChallanResponse)
 async def verify_challan(
-    request: ChallanRequest,
+    request_data: ChallanRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth: tuple[User, ApiKey] = Depends(verify_api_key)
 ):
@@ -26,14 +27,14 @@ async def verify_challan(
         user=user,
         api_key=api_key,
         endpoint_type="challan",
-        request_params={"vehicle_no": request.vehicle_no}
+        request_params={"vehicle_no": request_data.vehicle_no}
     ) as logger_ctx:
         
         # Create fallback engine
         engine = FallbackEngine(db)
         
         # Fetch data with fallback
-        data, source = await engine.fetch_challan_data(request.vehicle_no)
+        data, source = await engine.fetch_challan_data(request_data.vehicle_no)
         
         if data is None:
             logger_ctx.set_status(404)

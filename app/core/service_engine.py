@@ -10,6 +10,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from fastapi import HTTPException, status
 
 from app.models.service import Service
 from app.models.api_key import ApiKey
@@ -52,48 +53,57 @@ class ServiceEngine:
         self,
         service: Service,
         api_key: ApiKey,
-        subscription: Subscription,
+        subscription: Optional[Subscription],
         payload: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Execute a service with full validation and credit deduction
         
         Steps:
-        1. Validate subscription is active
+        1. Validate subscription (if exists) or check user credits
         2. Check credit balance >= service.price_per_call
         3. Execute service logic based on service.slug
-        4. Deduct credits from subscription and user
+        4. Deduct credits from subscription (if exists) or user directly
         5. Log usage with credits
         6. Broadcast to WebSocket
         7. Return result
         """
         start_time = time.time()
         
-        # 1. Validate subscription
-        if subscription.status != SubscriptionStatus.ACTIVE:
-            raise ValueError("Subscription is not active")
-        
-        # Check if subscription has expired (handle timezone-aware/naive comparison)
-        if subscription.expires_at:
-            now = datetime.now(timezone.utc)
-            expires_at = subscription.expires_at
-            # Make expires_at timezone-aware if it's naive
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if expires_at < now:
-                raise ValueError("Subscription has expired")
-        
-        # 2. Check credit balance
-        credits_needed = service.price_per_call
-        if subscription.credits_remaining < credits_needed:
-            raise ValueError(f"Insufficient credits. Required: {credits_needed}, Available: {subscription.credits_remaining}")
-        
         # Get user for credit tracking
         user_result = await self.db.execute(select(User).where(User.id == api_key.user_id))
         user = user_result.scalar_one()
         
-        credits_before = float(subscription.credits_remaining)
+        credits_needed = service.price_per_call
         user_credits_before = float(user.total_credits - user.credits_used)
+        
+        # 1. Validate subscription or check user credits
+        if subscription:
+            # Subscription-based flow
+            if subscription.status != SubscriptionStatus.ACTIVE:
+                raise ValueError("Subscription is not active")
+            
+            # Check if subscription has expired (handle timezone-aware/naive comparison)
+            if subscription.expires_at:
+                now = datetime.now(timezone.utc)
+                expires_at = subscription.expires_at
+                # Make expires_at timezone-aware if it's naive
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at < now:
+                    raise ValueError("Subscription has expired")
+            
+            # 2. Check credit balance from subscription
+            if subscription.credits_remaining < credits_needed:
+                raise ValueError(f"Insufficient credits. Required: {credits_needed}, Available: {subscription.credits_remaining}")
+            
+            credits_before = float(subscription.credits_remaining)
+        else:
+            # Admin-generated key without subscription - use user credits directly
+            if user_credits_before < float(credits_needed):
+                raise ValueError(f"Insufficient credits. Required: {credits_needed}, Available: {user_credits_before}")
+            
+            credits_before = user_credits_before
         
         # 3. Execute service logic
         try:
@@ -104,10 +114,14 @@ class ServiceEngine:
             raise
         
         # 4. Deduct credits
-        subscription.credits_remaining -= credits_needed
+        if subscription:
+            subscription.credits_remaining -= credits_needed
         user.credits_used += credits_needed
         
-        credits_after = float(subscription.credits_remaining)
+        if subscription:
+            credits_after = float(subscription.credits_remaining)
+        else:
+            credits_after = float(user.total_credits - user.credits_used)
         user_credits_after = float(user.total_credits - user.credits_used)
         
         # 5. Log usage
@@ -116,7 +130,7 @@ class ServiceEngine:
             user_id=user.id,
             api_key_id=api_key.id,
             service_id=service.id,
-            subscription_id=subscription.id,
+            subscription_id=subscription.id if subscription else None,
             endpoint_type=service.slug,
             request_params=payload,
             response_status=response_status,
@@ -124,7 +138,8 @@ class ServiceEngine:
             data_source=result.get("data_source", "db"),
             credits_deducted=credits_needed,
             credits_before=Decimal(str(credits_before)),
-            credits_after=Decimal(str(credits_after))
+            credits_after=Decimal(str(credits_after)),
+            success=True  # Only successful calls reach here
         )
         self.db.add(usage_log)
         
@@ -192,7 +207,11 @@ class ServiceEngine:
                 raise ValueError("reg_no is required")
             result, data_source = await self.fallback_engine.fetch_rc_data(reg_no)
             if result is None:
-                raise ValueError("RC data not found")
+                # Return 404 for data not found
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="RC data not found"
+                )
             return {**result, "data_source": data_source}
         
         elif service_slug == "rc-to-mobile":
@@ -206,6 +225,12 @@ class ServiceEngine:
             if not reg_no:
                 raise ValueError("reg_no is required")
             result, data_source = await self.fallback_engine.fetch_rc_data(reg_no)
+            if result is None:
+                # Return 404 for data not found
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="RC data not found"
+                )
             return {**result, "data_source": data_source}
         
         elif service_slug == "basic-vehicle-info":
@@ -213,6 +238,12 @@ class ServiceEngine:
             if not reg_no:
                 raise ValueError("reg_no is required")
             result, data_source = await self.fallback_engine.fetch_rc_data(reg_no)
+            if result is None:
+                # Return 404 for data not found
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="RC data not found"
+                )
             # Return only basic fields
             data = result.get("data", {})
             basic_data = {
@@ -245,6 +276,12 @@ class ServiceEngine:
             if not dl_no:
                 raise ValueError("dl_no is required")
             result, data_source = await self.fallback_engine.fetch_licence_data(dl_no)
+            if result is None:
+                # Return 404 for data not found
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Licence data not found"
+                )
             return {**result, "data_source": data_source}
         
         elif service_slug == "dl-to-challan":
@@ -258,6 +295,12 @@ class ServiceEngine:
             if not vehicle_no:
                 raise ValueError("vehicle_no is required")
             result, data_source = await self.fallback_engine.fetch_challan_data(vehicle_no)
+            if result is None:
+                # Return 404 for data not found
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Challan data not found"
+                )
             return {**result, "data_source": data_source}
         
         elif service_slug == "fuel-price-city":
@@ -327,7 +370,8 @@ class ServiceEngine:
     
     # Service-specific fetch methods
     async def _fetch_rc_mobile(self, reg_no: str) -> Dict[str, Any]:
-        """Fetch RC to Mobile Number"""
+        """Fetch RC to Mobile Number - tries RCMobileData first, then falls back to RCData"""
+        # First, try RCMobileData table
         result = await self.db.execute(
             select(RCMobileData).where(RCMobileData.reg_no == reg_no)
         )
@@ -347,8 +391,28 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        # TODO: Call external API if not in DB
-        raise ValueError("Data not found")
+        # Fallback: Try to get mobile from RC data
+        rc_result, rc_source = await self.fallback_engine.fetch_rc_data(reg_no)
+        if rc_result and rc_result.get("data", {}).get("mobileNo"):
+            mobile_no = rc_result["data"]["mobileNo"]
+            return {
+                "success": True,
+                "regNo": reg_no,
+                "status": 1,
+                "data": {
+                    "mobile_no": mobile_no,
+                    "responseType": 1
+                },
+                "message": "Mobile Number fetched successfully",
+                "dataType": 1,
+                "data_source": rc_source
+            }
+        
+        # If all fails, return 404
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="RC mobile data not found"
+        )
     
     async def _fetch_dl_challan(self, dl_no: str) -> Dict[str, Any]:
         """Fetch DL to Challan data"""
@@ -382,7 +446,19 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        raise ValueError("Data not found")
+        # Try external API fallback (if configured)
+        try:
+            api_result = await self._try_external_api_fallback("dl_challan", {"dl_no": dl_no})
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for DL Challan failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="DL challan data not found"
+        )
     
     async def _fetch_fuel_price(self, city: Optional[str] = None, state: Optional[str] = None) -> Dict[str, Any]:
         """Fetch Fuel Price by City or State"""
@@ -413,7 +489,20 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        raise ValueError("Fuel price data not found")
+        # Try external API fallback (if configured)
+        try:
+            api_params = {"city": city} if city else {"state": state}
+            api_result = await self._try_external_api_fallback("fuel", api_params)
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for Fuel Price failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fuel price data not found"
+        )
     
     async def _fetch_pan_data(self, pan_number: str) -> Dict[str, Any]:
         """Fetch PAN Verification data"""
@@ -453,7 +542,19 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        raise ValueError("PAN data not found")
+        # Try external API fallback (if configured)
+        try:
+            api_result = await self._try_external_api_fallback("pan", {"pan_number": pan_number})
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for PAN failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="PAN data not found"
+        )
     
     async def _fetch_pan_by_aadhaar(self, aadhaar_number: str) -> Dict[str, Any]:
         """Fetch PAN by Aadhaar (same structure as PAN verification)"""
@@ -465,7 +566,19 @@ class ServiceEngine:
         if data:
             return await self._fetch_pan_data(data.pan_number)
         
-        raise ValueError("PAN data not found for this Aadhaar")
+        # Try external API fallback (if configured)
+        try:
+            api_result = await self._try_external_api_fallback("pan", {"aadhaar_number": aadhaar_number})
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for PAN by Aadhaar failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="PAN data not found for this Aadhaar"
+        )
     
     async def _fetch_address_verification(self, aadhaar_no: str) -> Dict[str, Any]:
         """Fetch Address Verification data"""
@@ -493,10 +606,22 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        raise ValueError("Address verification data not found")
+        # Try external API fallback (if configured)
+        try:
+            api_result = await self._try_external_api_fallback("address", {"aadhaar_no": aadhaar_no})
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for Address Verification failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Address verification data not found"
+        )
     
     async def _fetch_gst_data(self, gstin: str) -> Dict[str, Any]:
-        """Fetch GST Verification data"""
+        """Fetch GST Verification data - checks DB first, then tries external APIs"""
         result = await self.db.execute(
             select(GSTData).where(GSTData.gstin == gstin)
         )
@@ -539,7 +664,19 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        raise ValueError("GST data not found")
+        # Try external API fallback (if configured)
+        try:
+            api_result = await self._try_external_api_fallback("gst", {"gstin": gstin})
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for GST failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="GST data not found"
+        )
     
     async def _fetch_msme_data(self, udyam_number: str) -> Dict[str, Any]:
         """Fetch MSME Verification data"""
@@ -578,7 +715,19 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        raise ValueError("MSME data not found")
+        # Try external API fallback (if configured)
+        try:
+            api_result = await self._try_external_api_fallback("msme", {"udyam_number": udyam_number})
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for MSME failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MSME data not found"
+        )
     
     async def _fetch_udyam_by_phone(self, phone_number: str) -> Dict[str, Any]:
         """Fetch Udyam by Phone Number"""
@@ -598,7 +747,19 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        raise ValueError("Udyam data not found")
+        # Try external API fallback (if configured)
+        try:
+            api_result = await self._try_external_api_fallback("udyam", {"phone_number": phone_number})
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for Udyam failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Udyam data not found"
+        )
     
     async def _fetch_voter_id(self, epic_number: str) -> Dict[str, Any]:
         """Fetch Voter ID Verification data"""
@@ -640,7 +801,35 @@ class ServiceEngine:
                 "data_source": data.data_source
             }
         
-        raise ValueError("Voter ID data not found")
+        # Try external API fallback (if configured)
+        try:
+            api_result = await self._try_external_api_fallback("voter", {"epic_number": epic_number})
+            if api_result:
+                return api_result
+        except Exception as e:
+            logger.debug(f"External API fallback for Voter ID failed: {e}")
+        
+        # Return 404 for data not found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Voter ID data not found"
+        )
+    
+    async def _try_external_api_fallback(self, api_type: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Try to fetch data from external APIs as fallback
+        This is a generic fallback mechanism for services that don't have dedicated fallback logic
+        """
+        try:
+            # Use the fallback engine's parallel API call mechanism
+            api_result = await self.fallback_engine._parallel_api_call(api_type, params)
+            if api_result and api_result[0]:
+                # TODO: Store the result in appropriate database table
+                logger.info(f"Got {api_type} data from external API: {api_result[1]}")
+                return api_result[0]
+        except Exception as e:
+            logger.debug(f"External API fallback failed for {api_type}: {e}")
+        return None
     
     def _is_fresh(self, fetched_at: datetime, ttl_hours: int) -> bool:
         """Check if data is fresh based on TTL"""

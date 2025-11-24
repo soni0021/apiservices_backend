@@ -43,6 +43,10 @@ class User(Base):
     total_credits = Column(Numeric(10, 2), default=0, nullable=False)
     credits_used = Column(Numeric(10, 2), default=0, nullable=False)
     
+    # Flexible pricing per user (default is global 5 rupees per credit)
+    # Admin can set custom pricing per user
+    price_per_credit = Column(Numeric(10, 2), default=5.0, nullable=False)  # Rupees per credit
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
