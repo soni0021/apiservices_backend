@@ -6,8 +6,9 @@ from functools import lru_cache
 class Settings(BaseSettings):
     """Application settings loaded from environment variables with hardcoded defaults"""
     
-    # Database - Hardcoded default (should be overridden in production)
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/apiservices"
+    # Database - Hardcoded default (fallback to Neon DB if .env not provided)
+    # Can be overridden via .env file or environment variable
+    DATABASE_URL: str = "postgresql://neondb_owner:npg_iE6tsGWjex0L@ep-floral-sun-a4ivcahj-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require"
     
     # JWT Configuration - Hardcoded defaults
     JWT_SECRET_KEY: str = "your-super-secret-jwt-key-change-this-in-production-minimum-32-characters"

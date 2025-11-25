@@ -1,8 +1,8 @@
 """
 Generic service execution endpoint
-Handles all service types with API key validation, subscription check, and credit deduction
+Handles all service types with API key validation, user service access check, and credit deduction
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Header, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Body, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -10,7 +10,6 @@ from typing import Dict, Any
 from app.database import get_db
 from app.models.service import Service
 from app.models.api_key import ApiKey, ApiKeyStatus
-from app.models.subscription import Subscription, SubscriptionStatus
 from app.models.user import User, UserStatus
 from app.middleware.api_key import verify_api_key
 from app.core.service_engine import ServiceEngine
@@ -26,32 +25,22 @@ router = APIRouter()
 async def execute_service(
     service_slug: str,
     payload: Dict[str, Any] = Body(...),
-    x_api_key: str = Header(..., alias="X-API-Key"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    auth: tuple[User, ApiKey] = Depends(verify_api_key)
 ):
     """
     Generic service execution endpoint
     
     Validates:
-    1. API key exists and is active
+    1. API key exists and is active (with whitelist URL check)
     2. Service exists and is active
-    3. API key belongs to the requested service
-    4. User has active subscription for the service
-    5. Subscription has sufficient credits
+    3. API key has access to the requested service
+    4. User has access to the service (via user_service_access)
+    5. User has sufficient credits
     
     Executes service and deducts credits
     """
-    # 1. Verify API key
-    try:
-        user, api_key = await verify_api_key(x_api_key, db)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error verifying API key: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key"
-        )
+    user, api_key = auth
     
     # 2. Get service
     result = await db.execute(
@@ -68,42 +57,51 @@ async def execute_service(
             detail=f"Service '{service_slug}' not found or inactive"
         )
     
-    # 3. Verify API key belongs to this service
-    if api_key.service_id != service.id:
+    # 3. Verify API key has access to this service
+    has_access = False
+    access_reason = ""
+    
+    if api_key.allowed_services:
+        if "*" in api_key.allowed_services:
+            has_access = True  # All services access
+            access_reason = "all services (wildcard)"
+        elif service.id in api_key.allowed_services:
+            has_access = True  # Specific service in allowed list
+            access_reason = f"service '{service.name}' in allowed list"
+    elif api_key.service_id == service.id:
+        has_access = True  # Backward compatibility: single service key
+        access_reason = f"service_id match"
+    
+    if not has_access:
+        # Provide detailed error message
+        allowed_info = "all services" if (api_key.allowed_services and "*" in api_key.allowed_services) else f"{len(api_key.allowed_services or [])} specific service(s)"
+        error_msg = (
+            f"API key does not have access to service '{service_slug}' ({service.name}). "
+            f"This key has access to: {allowed_info}. "
+            f"Contact admin to grant access to this service."
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"API key is not authorized for service '{service_slug}'. This key is for a different service."
+            detail=error_msg
         )
     
-    # 4. Get subscription
-    if not api_key.subscription_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API key is not linked to a subscription"
-        )
+    # Log access granted for debugging
+    logger.info(f"API key {api_key.id} granted access to {service_slug} ({access_reason})")
     
-    result = await db.execute(
-        select(Subscription).where(Subscription.id == api_key.subscription_id)
-    )
-    subscription = result.scalar_one_or_none()
-    
-    if not subscription:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Subscription not found"
-        )
-    
-    # 5. Execute service
+    # 4. Execute service (service engine will check user service access and credits)
     try:
         service_engine = ServiceEngine(db)
         result = await service_engine.execute_service(
             service=service,
             api_key=api_key,
-            subscription=subscription,
             payload=payload
         )
         return result
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 404 for data not found)
+        raise
     except ValueError as e:
+        # ValueError for missing required parameters should be 400
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)

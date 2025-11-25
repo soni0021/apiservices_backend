@@ -43,6 +43,10 @@ class User(Base):
     total_credits = Column(Numeric(10, 2), default=0, nullable=False)
     credits_used = Column(Numeric(10, 2), default=0, nullable=False)
     
+    # Flexible pricing per user (default is global 5 rupees per credit)
+    # Admin can set custom pricing per user
+    price_per_credit = Column(Numeric(10, 2), default=5.0, nullable=False)  # Rupees per credit
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
@@ -50,7 +54,7 @@ class User(Base):
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
     api_tokens = relationship("ApiToken", back_populates="user", cascade="all, delete-orphan")
     usage_logs = relationship("ApiUsageLog", back_populates="user", cascade="all, delete-orphan")
-    subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
+    service_access = relationship("UserServiceAccess", foreign_keys="UserServiceAccess.user_id", back_populates="user", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
 
 

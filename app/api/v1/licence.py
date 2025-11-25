@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas.licence import LicenceRequest, LicenceResponse
@@ -13,7 +13,8 @@ router = APIRouter()
 
 @router.post("/licence", response_model=LicenceResponse)
 async def verify_licence(
-    request: LicenceRequest,
+    request_data: LicenceRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth: tuple[User, ApiKey] = Depends(verify_api_key)
 ):
@@ -26,14 +27,14 @@ async def verify_licence(
         user=user,
         api_key=api_key,
         endpoint_type="dl",
-        request_params={"dl_no": request.dl_no, "dob": request.dob}
+        request_params={"dl_no": request_data.dl_no, "dob": request_data.dob}
     ) as logger_ctx:
         
         # Create fallback engine
         engine = FallbackEngine(db)
         
         # Fetch data with fallback
-        data, source = await engine.fetch_licence_data(request.dl_no, request.dob)
+        data, source = await engine.fetch_licence_data(request_data.dl_no, request_data.dob)
         
         if data is None:
             logger_ctx.set_status(404)

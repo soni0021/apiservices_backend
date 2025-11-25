@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas.rc import RCRequest, RCResponse
@@ -13,7 +13,8 @@ router = APIRouter()
 
 @router.post("/rc", response_model=RCResponse)
 async def verify_rc(
-    request: RCRequest,
+    request_data: RCRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth: tuple[User, ApiKey] = Depends(verify_api_key)
 ):
@@ -26,14 +27,14 @@ async def verify_rc(
         user=user,
         api_key=api_key,
         endpoint_type="rc",
-        request_params={"reg_no": request.reg_no}
+        request_params={"reg_no": request_data.reg_no}
     ) as logger_ctx:
         
         # Create fallback engine
         engine = FallbackEngine(db)
         
         # Fetch data with fallback
-        data, source = await engine.fetch_rc_data(request.reg_no)
+        data, source = await engine.fetch_rc_data(request_data.reg_no)
         
         if data is None:
             logger_ctx.set_status(404)
