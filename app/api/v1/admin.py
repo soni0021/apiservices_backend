@@ -20,6 +20,8 @@ from app.schemas.marketplace import (
     CategoryCreate, CategoryResponse,
     ServiceCreate, ServiceResponse
 )
+from app.schemas.auth import UserCreate, UserResponse
+from app.models.user import UserRole
 from app.websocket.manager import manager
 from app.websocket.events import create_user_registration_event
 from pydantic import BaseModel
@@ -147,14 +149,94 @@ async def get_user_detail(
     )
 
 
-@router.put("/users/{user_id}")
-async def update_user(
-    user_id: str,
-    status_update: str,
+@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def create_user(
+    user_data: UserCreate,
     current_admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update user status"""
+    """Admin creates a new client user (same signup flow)"""
+    from app.core.security import get_password_hash
+    
+    # Check if user already exists
+    result = await db.execute(
+        select(User).where(User.email == user_data.email)
+    )
+    existing_user = result.scalar_one_or_none()
+    
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new user with all mandatory fields (same as registration)
+    hashed_password = get_password_hash(user_data.password)
+    new_user = User(
+        email=user_data.email,
+        password_hash=hashed_password,
+        full_name=user_data.full_name,
+        phone=user_data.phone,
+        customer_name=user_data.customer_name,
+        phone_number=user_data.phone_number,
+        website_link=user_data.website_link,
+        address=user_data.address,
+        gst_number=user_data.gst_number,
+        msme_certificate=user_data.msme_certificate,
+        aadhar_number=user_data.aadhar_number,
+        pan_number=user_data.pan_number,
+        birthday=user_data.birthday,
+        about_me=user_data.about_me,
+        role=UserRole.CLIENT,
+        status=UserStatus.INACTIVE,  # New users are inactive by default - admin must activate or payment activates
+        total_credits=0,
+        credits_used=0
+    )
+    
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+    
+    # Return user response
+    return UserResponse(
+        id=new_user.id,
+        email=new_user.email,
+        full_name=new_user.full_name or "",
+        phone=new_user.phone,
+        customer_name=new_user.customer_name,
+        phone_number=new_user.phone_number,
+        website_link=new_user.website_link,
+        address=new_user.address,
+        gst_number=new_user.gst_number,
+        msme_certificate=new_user.msme_certificate,
+        aadhar_number=new_user.aadhar_number,
+        pan_number=new_user.pan_number,
+        birthday=new_user.birthday,
+        about_me=new_user.about_me,
+        total_credits=float(new_user.total_credits),
+        credits_used=float(new_user.credits_used),
+        role=new_user.role.value if hasattr(new_user.role, 'value') else str(new_user.role),
+        status=new_user.status.value if hasattr(new_user.status, 'value') else str(new_user.status),
+        created_at=new_user.created_at,
+        updated_at=new_user.updated_at
+    )
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_200_OK)
+async def delete_user(
+    user_id: str,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a user (admin only)"""
+    # Prevent admin from deleting themselves
+    if user_id == current_admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete your own account"
+        )
+    
+    # Get user
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     
@@ -164,15 +246,52 @@ async def update_user(
             detail="User not found"
         )
     
-    if status_update in ["active", "inactive"]:
-        user.status = UserStatus.ACTIVE if status_update == "active" else UserStatus.INACTIVE
-        await db.commit()
-        return {"message": "User status updated successfully"}
+    # Prevent deleting admin users
+    if user.role == UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete admin users"
+        )
     
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Invalid status"
-    )
+    # Delete user (cascade will handle related records)
+    await db.execute(delete(User).where(User.id == user_id))
+    await db.commit()
+    
+    return {"message": "User deleted successfully"}
+
+
+class UserStatusUpdate(BaseModel):
+    status: str  # "active" or "inactive"
+
+
+@router.put("/users/{user_id}/status", status_code=status.HTTP_200_OK)
+async def update_user_status(
+    user_id: str,
+    status_update: UserStatusUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update user status (activate/deactivate)"""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    if status_update.status not in ["active", "inactive"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid status. Must be 'active' or 'inactive'"
+        )
+    
+    user.status = UserStatus.ACTIVE if status_update.status == "active" else UserStatus.INACTIVE
+    await db.commit()
+    await db.refresh(user)
+    
+    return {"message": f"User status updated to {status_update.status} successfully", "status": user.status.value}
 
 
 @router.get("/analytics", response_model=SystemAnalytics)
@@ -875,6 +994,10 @@ async def allocate_credits_to_user(
             transaction_id=f"ADMIN-{uuid.uuid4().hex[:12].upper()}"
         )
         db.add(transaction)
+        
+        # Auto-activate user after payment
+        if user.status == UserStatus.INACTIVE:
+            user.status = UserStatus.ACTIVE
     
     await db.commit()
     await db.refresh(user)

@@ -25,7 +25,7 @@ class User(Base):
     full_name = Column(String, nullable=False)
     phone = Column(String)
     role = Column(Enum(UserRole), nullable=False, default=UserRole.CLIENT)
-    status = Column(Enum(UserStatus), nullable=False, default=UserStatus.ACTIVE)
+    status = Column(Enum(UserStatus), nullable=False, default=UserStatus.INACTIVE)  # Users inactive by default until admin activates or payment is made
     
     # New customer fields
     customer_name = Column(String, nullable=True)
