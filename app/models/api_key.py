@@ -18,7 +18,6 @@ class ApiKey(Base):
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     # service_id is now optional - can be null for multi-service keys
     service_id = Column(String, ForeignKey("services.id", ondelete="CASCADE"), nullable=True, index=True)
-    subscription_id = Column(String, ForeignKey("subscriptions.id", ondelete="SET NULL"), nullable=True, index=True)
     key_hash = Column(String, nullable=False, unique=True, index=True)
     key_prefix = Column(String(16), nullable=False)  # First 8-12 chars for display
     name = Column(String, nullable=False)
@@ -42,6 +41,5 @@ class ApiKey(Base):
     # Relationships
     user = relationship("User", back_populates="api_keys")
     service = relationship("Service", back_populates="api_keys")
-    subscription = relationship("Subscription", back_populates="api_keys")
     usage_logs = relationship("ApiUsageLog", back_populates="api_key", cascade="all, delete-orphan")
 

@@ -17,7 +17,7 @@ from app.models.category import Category
 from app.models.service import Service
 from app.models.service_industry import ServiceIndustry
 from app.models.user import User, UserRole, UserStatus
-from app.models.subscription import Subscription, SubscriptionStatus
+# Subscription model removed - using user_service_access instead
 from app.models.transaction import Transaction, PaymentStatus
 from app.models.api_key import ApiKey, ApiKeyStatus
 from app.core.security import get_password_hash, generate_api_key

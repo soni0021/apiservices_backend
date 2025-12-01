@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from pydantic import BaseModel
 from app.database import get_db
 from app.models.user import User, UserRole, UserStatus
 from app.schemas.auth import UserCreate, UserLogin, TokenResponse, UserResponse, RefreshTokenRequest
+from app.middleware.auth import get_current_user
 from app.core.security import (
     verify_password,
     get_password_hash,
@@ -33,12 +35,12 @@ async def register(
             detail="Email already registered"
         )
     
-    # Create new user with all mandatory fields
+    # Create new user - only email and password required, other fields optional
     hashed_password = get_password_hash(user_data.password)
     new_user = User(
         email=user_data.email,
         password_hash=hashed_password,
-        full_name=user_data.full_name,
+        full_name=user_data.full_name or "",
         phone=user_data.phone,
         customer_name=user_data.customer_name,
         phone_number=user_data.phone_number,
@@ -51,6 +53,7 @@ async def register(
         birthday=user_data.birthday,
         about_me=user_data.about_me,
         role=UserRole.CLIENT,
+        status=UserStatus.INACTIVE,  # New users are inactive by default - admin must activate or payment activates
         total_credits=0,
         credits_used=0
     )
@@ -162,4 +165,40 @@ async def refresh_token(
         access_token=new_access_token,
         refresh_token=new_refresh_token
     )
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.put("/change-password", status_code=status.HTTP_200_OK)
+async def change_password(
+    password_data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Change user password"""
+    from app.core.security import verify_password, get_password_hash
+    
+    # Verify current password
+    if not verify_password(password_data.current_password, current_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect"
+        )
+    
+    # Validate new password (minimum length)
+    if len(password_data.new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be at least 6 characters long"
+        )
+    
+    # Update password
+    current_user.password_hash = get_password_hash(password_data.new_password)
+    await db.commit()
+    await db.refresh(current_user)
+    
+    return {"message": "Password changed successfully"}
 

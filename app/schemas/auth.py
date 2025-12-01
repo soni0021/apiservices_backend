@@ -6,13 +6,13 @@ from datetime import datetime, date
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
-    full_name: str
+    full_name: Optional[str] = None
     phone: Optional[str] = None
-    # New mandatory customer fields
-    customer_name: str
-    phone_number: str
+    # Customer fields - all optional, can be filled later
+    customer_name: Optional[str] = None
+    phone_number: Optional[str] = None
     website_link: Optional[str] = None
-    address: str
+    address: Optional[str] = None
     gst_number: Optional[str] = None
     msme_certificate: Optional[str] = None
     aadhar_number: Optional[str] = None
@@ -61,4 +61,9 @@ class TokenResponse(BaseModel):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, delete
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 from app.database import get_db
@@ -8,7 +8,7 @@ from app.models.user import User
 from app.models.api_key import ApiKey, ApiKeyStatus
 from app.models.usage_log import ApiUsageLog
 from app.models.service import Service
-from app.models.subscription import Subscription, SubscriptionStatus
+from app.models.user_service_access import UserServiceAccess
 from app.models.transaction import Transaction, PaymentStatus
 from app.models.category import Category
 from app.models.industry import Industry
@@ -16,7 +16,6 @@ from app.models.service_industry import ServiceIndustry
 from app.middleware.auth import get_current_active_user
 from app.core.security import generate_api_key
 from app.schemas.marketplace import (
-    SubscriptionCreate, SubscriptionResponse,
     TransactionCreate, TransactionResponse,
     CreditPurchaseRequest, CreditPurchaseResponse,
     APIKeyGenerateRequest, APIKeyResponse,
@@ -25,7 +24,6 @@ from app.schemas.marketplace import (
 from app.websocket.manager import manager
 from app.websocket.events import (
     create_credit_purchase_event,
-    create_subscription_event,
     create_credit_balance_update_event
 )
 from pydantic import BaseModel
@@ -74,12 +72,12 @@ class ProfileUpdate(BaseModel):
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(
+async def delete_api_key(
     key_id: str,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Revoke an API key"""
+    """Delete an API key permanently from database"""
     result = await db.execute(
         select(ApiKey).where(
             and_(ApiKey.id == key_id, ApiKey.user_id == current_user.id)
@@ -93,10 +91,11 @@ async def revoke_api_key(
             detail="API key not found"
         )
     
-    api_key.status = ApiKeyStatus.REVOKED
+    # Actually delete from database
+    await db.delete(api_key)
     await db.commit()
     
-    return {"message": "API key revoked successfully"}
+    return {"message": "API key deleted successfully"}
 
 
 @router.get("/usage", response_model=UsageStats)
@@ -255,66 +254,166 @@ async def get_service_details(
     return service
 
 
-# Subscription creation removed - only admins can create subscriptions
-# Clients can only view their subscriptions via GET /subscriptions
+# Subscriptions removed - users now have direct service access managed by admin
 
-
-@router.get("/subscriptions", response_model=List[SubscriptionResponse])
-async def get_subscriptions(
+@router.get("/service-access", response_model=List[ServiceResponse])
+async def get_user_service_access(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """View user's active subscriptions"""
-    try:
-        result = await db.execute(
-            select(Subscription)
-            .where(Subscription.user_id == current_user.id)
-            .options(selectinload(Subscription.service))
-            .order_by(Subscription.created_at.desc())
+    """Get list of services the current user has access to"""
+    # Get all service access records for this user
+    access_result = await db.execute(
+        select(UserServiceAccess).where(UserServiceAccess.user_id == current_user.id)
+    )
+    access_records = access_result.scalars().all()
+    
+    # Get service IDs
+    service_ids = [access.service_id for access in access_records]
+    
+    if not service_ids:
+        return []
+    
+    # Fetch services
+    services_result = await db.execute(
+        select(Service)
+        .where(Service.id.in_(service_ids))
+        .where(Service.is_active == True)
+        .options(selectinload(Service.category))
+    )
+    services = services_result.scalars().all()
+    
+    return [
+        ServiceResponse(
+            id=svc.id,
+            name=svc.name,
+            slug=svc.slug,
+            category_id=svc.category_id,
+            description=svc.description,
+            endpoint_path=svc.endpoint_path,
+            request_schema=svc.request_schema,
+            response_schema=svc.response_schema,
+            price_per_call=float(svc.price_per_call),
+            is_active=svc.is_active,
+            created_at=svc.created_at,
+            updated_at=svc.updated_at if svc.updated_at else svc.created_at,
+            category=None,
+            industries=None
         )
-        subscriptions = result.scalars().all()
+        for svc in services
+    ]
+
+
+@router.post("/api-keys/generate", response_model=APIKeyResponse, status_code=status.HTTP_201_CREATED)
+async def generate_api_key_for_client(
+    key_data: APIKeyGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Client generates their own API key for services they have access to"""
+    from app.core.security import generate_api_key, encrypt_api_key
+    
+    # If service_ids is not provided or empty, automatically use all services user has access to
+    if not key_data.service_ids or len(key_data.service_ids) == 0:
+        # Get all services user has access to
+        access_result = await db.execute(
+            select(UserServiceAccess).where(
+                UserServiceAccess.user_id == current_user.id
+            )
+        )
+        access_records = access_result.scalars().all()
         
-        # Convert to response format
-        return [
-            SubscriptionResponse(
-                id=sub.id,
-                user_id=sub.user_id,
-                service_id=sub.service_id,
-                status=sub.status.value,
-                credits_allocated=float(sub.credits_allocated),
-                credits_remaining=float(sub.credits_remaining),
-                started_at=sub.started_at,
-                expires_at=sub.expires_at,
-                created_at=sub.created_at,
-                updated_at=sub.updated_at,
-                service=ServiceResponse(
-                    id=sub.service.id,
-                    name=sub.service.name,
-                    slug=sub.service.slug,
-                    category_id=sub.service.category_id,
-                    description=sub.service.description,
-                    endpoint_path=sub.service.endpoint_path,
-                    request_schema=sub.service.request_schema,
-                    response_schema=sub.service.response_schema,
-                    price_per_call=float(sub.service.price_per_call),
-                    is_active=sub.service.is_active,
-                    created_at=sub.service.created_at,
-                    updated_at=sub.service.updated_at,
+        if not access_records:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to any services. Contact admin to grant access."
+            )
+        
+        # Extract service IDs from access records
+        service_ids = [access.service_id for access in access_records]
+    else:
+        # Validate that user has access to all requested services
+        service_ids = key_data.service_ids
+        for service_id in service_ids:
+            access_result = await db.execute(
+                select(UserServiceAccess).where(
+                    UserServiceAccess.user_id == current_user.id,
+                    UserServiceAccess.service_id == service_id
+                )
+            )
+            access = access_result.scalar_one_or_none()
+            if not access:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"You do not have access to service {service_id}. Contact admin to grant access."
+                )
+    
+    # Generate API key
+    full_key, key_hash, key_prefix = generate_api_key()
+    encrypted_key = encrypt_api_key(full_key)
+    
+    # Determine allowed_services - use the service_ids we determined above
+    allowed_services = service_ids
+    
+    # Create API key
+    api_key = ApiKey(
+        user_id=current_user.id,
+        name=key_data.name,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        encrypted_key=encrypted_key,
+        allowed_services=allowed_services,
+        whitelist_urls=key_data.whitelist_urls if key_data.whitelist_urls else None,
+        status=ApiKeyStatus.ACTIVE
+    )
+    
+    db.add(api_key)
+    await db.commit()
+    await db.refresh(api_key)
+    
+    # Load services for response
+    services_list = []
+    if allowed_services:
+        for svc_id in allowed_services:
+            svc_result = await db.execute(
+                select(Service)
+                .where(Service.id == svc_id)
+                .options(selectinload(Service.category))
+            )
+            svc = svc_result.scalar_one_or_none()
+            if svc:
+                services_list.append(ServiceResponse(
+                    id=svc.id,
+                    name=svc.name,
+                    slug=svc.slug,
+                    category_id=svc.category_id,
+                    description=svc.description,
+                    endpoint_path=svc.endpoint_path,
+                    request_schema=svc.request_schema,
+                    response_schema=svc.response_schema,
+                    price_per_call=float(svc.price_per_call),
+                    is_active=svc.is_active,
+                    created_at=svc.created_at,
+                    updated_at=svc.updated_at if svc.updated_at else svc.created_at,
                     category=None,
                     industries=None
-                ) if sub.service else None
-            )
-            for sub in subscriptions
-        ]
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error fetching subscriptions: {e}", exc_info=True)
-        return []
-
-
-# API key generation removed from client - Admin-only feature now
-# Clients must contact admin to get API keys
+                ))
+    
+    return APIKeyResponse(
+        id=api_key.id,
+        service_id=api_key.service_id,
+        subscription_id=None,  # No subscriptions anymore
+        key_prefix=api_key.key_prefix,
+        full_key=full_key,  # Return full key on creation
+        name=api_key.name,
+        status=api_key.status.value,
+        allowed_services=api_key.allowed_services,
+        services=services_list if services_list else None,
+        whitelist_urls=api_key.whitelist_urls,
+        last_used_at=api_key.last_used_at,
+        created_at=api_key.created_at,
+        updated_at=api_key.updated_at
+    )
 
 
 @router.get("/api-keys", response_model=List[APIKeyResponse])
@@ -391,7 +490,7 @@ async def list_api_keys_by_service(
         response_list.append(APIKeyResponse(
             id=key.id,
             service_id=key.service_id,
-            subscription_id=key.subscription_id,
+            subscription_id=None,  # No subscriptions anymore
             key_prefix=key.key_prefix,
             full_key=full_key,  # Return decrypted full key
             name=key.name,
@@ -408,16 +507,15 @@ async def list_api_keys_by_service(
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(
+async def delete_api_key_duplicate(
     key_id: str,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Revoke an API key"""
+    """Delete an API key permanently from database"""
     result = await db.execute(
         select(ApiKey).where(
-            ApiKey.id == key_id,
-            ApiKey.user_id == current_user.id
+            and_(ApiKey.id == key_id, ApiKey.user_id == current_user.id)
         )
     )
     api_key = result.scalar_one_or_none()
@@ -425,10 +523,11 @@ async def revoke_api_key(
     if not api_key:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
     
-    api_key.status = ApiKeyStatus.REVOKED
+    # Actually delete from database
+    await db.execute(delete(ApiKey).where(ApiKey.id == key_id))
     await db.commit()
-    
-    return {"message": "API key revoked successfully"}
+
+    return {"message": "API key deleted successfully"}
 
 
 # Credit purchase removed - admin-only feature now

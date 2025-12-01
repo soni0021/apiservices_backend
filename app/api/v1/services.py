@@ -1,6 +1,6 @@
 """
 Generic service execution endpoint
-Handles all service types with API key validation, subscription check, and credit deduction
+Handles all service types with API key validation, user service access check, and credit deduction
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Body, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +10,6 @@ from typing import Dict, Any
 from app.database import get_db
 from app.models.service import Service
 from app.models.api_key import ApiKey, ApiKeyStatus
-from app.models.subscription import Subscription, SubscriptionStatus
 from app.models.user import User, UserStatus
 from app.middleware.api_key import verify_api_key
 from app.core.service_engine import ServiceEngine
@@ -36,8 +35,8 @@ async def execute_service(
     1. API key exists and is active (with whitelist URL check)
     2. Service exists and is active
     3. API key has access to the requested service
-    4. User has sufficient credits
-    5. Subscription (if exists) is active and has sufficient credits
+    4. User has access to the service (via user_service_access)
+    5. User has sufficient credits
     
     Executes service and deducts credits
     """
@@ -89,21 +88,12 @@ async def execute_service(
     # Log access granted for debugging
     logger.info(f"API key {api_key.id} granted access to {service_slug} ({access_reason})")
     
-    # 4. Get subscription (optional for admin-generated keys)
-    subscription = None
-    if api_key.subscription_id:
-        result = await db.execute(
-            select(Subscription).where(Subscription.id == api_key.subscription_id)
-        )
-        subscription = result.scalar_one_or_none()
-    
-    # 5. Execute service
+    # 4. Execute service (service engine will check user service access and credits)
     try:
         service_engine = ServiceEngine(db)
         result = await service_engine.execute_service(
             service=service,
             api_key=api_key,
-            subscription=subscription,  # Can be None for admin-generated keys
             payload=payload
         )
         return result

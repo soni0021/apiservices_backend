@@ -24,7 +24,7 @@ class Service(Base):
     # Relationships
     category = relationship("Category", back_populates="services")
     service_industries = relationship("ServiceIndustry", back_populates="service", cascade="all, delete-orphan")
-    subscriptions = relationship("Subscription", back_populates="service")
+    user_access = relationship("UserServiceAccess", back_populates="service", cascade="all, delete-orphan")
     api_keys = relationship("ApiKey", back_populates="service")
     usage_logs = relationship("ApiUsageLog", back_populates="service")
 

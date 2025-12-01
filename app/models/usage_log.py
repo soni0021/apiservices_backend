@@ -12,7 +12,6 @@ class ApiUsageLog(Base):
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     api_key_id = Column(String, ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True, index=True)
     service_id = Column(String, ForeignKey("services.id", ondelete="SET NULL"), nullable=True, index=True)
-    subscription_id = Column(String, ForeignKey("subscriptions.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Request details
     endpoint_type = Column(String, nullable=False)  # rc, dl, challan, pan, gst, etc.
@@ -35,5 +34,4 @@ class ApiUsageLog(Base):
     user = relationship("User", back_populates="usage_logs")
     api_key = relationship("ApiKey", back_populates="usage_logs")
     service = relationship("Service", back_populates="usage_logs")
-    subscription = relationship("Subscription", back_populates="usage_logs")
 

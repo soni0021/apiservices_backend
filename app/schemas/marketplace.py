@@ -141,7 +141,7 @@ class CreditPurchaseResponse(BaseModel):
 
 # API Key Generation Schema
 class APIKeyGenerateRequest(BaseModel):
-    service_ids: List[str]  # Can be single or multiple service IDs
+    service_ids: Optional[List[str]] = None  # Optional: If empty/null, uses all services user has access to
     name: str
     # If service_ids contains "*", grants access to all services
     whitelist_urls: Optional[List[str]] = None  # Optional: Whitelist URLs for security

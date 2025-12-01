@@ -25,7 +25,7 @@ class User(Base):
     full_name = Column(String, nullable=False)
     phone = Column(String)
     role = Column(Enum(UserRole), nullable=False, default=UserRole.CLIENT)
-    status = Column(Enum(UserStatus), nullable=False, default=UserStatus.ACTIVE)
+    status = Column(Enum(UserStatus), nullable=False, default=UserStatus.INACTIVE)  # Users inactive by default until admin activates or payment is made
     
     # New customer fields
     customer_name = Column(String, nullable=True)
@@ -54,7 +54,7 @@ class User(Base):
     api_keys = relationship("ApiKey", back_populates="user", cascade="all, delete-orphan")
     api_tokens = relationship("ApiToken", back_populates="user", cascade="all, delete-orphan")
     usage_logs = relationship("ApiUsageLog", back_populates="user", cascade="all, delete-orphan")
-    subscriptions = relationship("Subscription", back_populates="user", cascade="all, delete-orphan")
+    service_access = relationship("UserServiceAccess", foreign_keys="UserServiceAccess.user_id", back_populates="user", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
 
 

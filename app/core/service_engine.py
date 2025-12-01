@@ -1,6 +1,6 @@
 """
 Unified service execution engine
-Handles all service types with subscription validation, credit deduction, and WebSocket broadcasting
+Handles all service types with user service access validation, credit deduction, and WebSocket broadcasting
 """
 import asyncio
 import time
@@ -14,7 +14,6 @@ from fastapi import HTTPException, status
 
 from app.models.service import Service
 from app.models.api_key import ApiKey
-from app.models.subscription import Subscription, SubscriptionStatus
 from app.models.user import User
 from app.models.usage_log import ApiUsageLog
 from app.core.fallback_engine import FallbackEngine
@@ -53,17 +52,16 @@ class ServiceEngine:
         self,
         service: Service,
         api_key: ApiKey,
-        subscription: Optional[Subscription],
         payload: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Execute a service with full validation and credit deduction
         
         Steps:
-        1. Validate subscription (if exists) or check user credits
+        1. Check user has access to the service (via user_service_access)
         2. Check credit balance >= service.price_per_call
         3. Execute service logic based on service.slug
-        4. Deduct credits from subscription (if exists) or user directly
+        4. Deduct credits from user directly
         5. Log usage with credits
         6. Broadcast to WebSocket
         7. Return result
@@ -77,33 +75,24 @@ class ServiceEngine:
         credits_needed = service.price_per_call
         user_credits_before = float(user.total_credits - user.credits_used)
         
-        # 1. Validate subscription or check user credits
-        if subscription:
-            # Subscription-based flow
-            if subscription.status != SubscriptionStatus.ACTIVE:
-                raise ValueError("Subscription is not active")
-            
-            # Check if subscription has expired (handle timezone-aware/naive comparison)
-            if subscription.expires_at:
-                now = datetime.now(timezone.utc)
-                expires_at = subscription.expires_at
-                # Make expires_at timezone-aware if it's naive
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=timezone.utc)
-                if expires_at < now:
-                    raise ValueError("Subscription has expired")
-            
-            # 2. Check credit balance from subscription
-            if subscription.credits_remaining < credits_needed:
-                raise ValueError(f"Insufficient credits. Required: {credits_needed}, Available: {subscription.credits_remaining}")
-            
-            credits_before = float(subscription.credits_remaining)
-        else:
-            # Admin-generated key without subscription - use user credits directly
-            if user_credits_before < float(credits_needed):
-                raise ValueError(f"Insufficient credits. Required: {credits_needed}, Available: {user_credits_before}")
-            
-            credits_before = user_credits_before
+        # 1. Check user has access to this service
+        from app.models.user_service_access import UserServiceAccess
+        access_result = await self.db.execute(
+            select(UserServiceAccess).where(
+                UserServiceAccess.user_id == user.id,
+                UserServiceAccess.service_id == service.id
+            )
+        )
+        user_access = access_result.scalar_one_or_none()
+        
+        if not user_access:
+            raise ValueError(f"User does not have access to service '{service.name}'. Contact admin to grant access.")
+        
+        # 2. Check credit balance
+        if user_credits_before < float(credits_needed):
+            raise ValueError(f"Insufficient credits. Required: {credits_needed}, Available: {user_credits_before}")
+        
+        credits_before = user_credits_before
         
         # 3. Execute service logic
         try:
@@ -113,16 +102,10 @@ class ServiceEngine:
             logger.error(f"Service execution error for {service.slug}: {e}")
             raise
         
-        # 4. Deduct credits
-        if subscription:
-            subscription.credits_remaining -= credits_needed
+        # 4. Deduct credits from user
         user.credits_used += credits_needed
-        
-        if subscription:
-            credits_after = float(subscription.credits_remaining)
-        else:
-            credits_after = float(user.total_credits - user.credits_used)
-        user_credits_after = float(user.total_credits - user.credits_used)
+        credits_after = float(user.total_credits - user.credits_used)
+        user_credits_after = credits_after
         
         # 5. Log usage
         response_time_ms = int((time.time() - start_time) * 1000)
@@ -130,7 +113,6 @@ class ServiceEngine:
             user_id=user.id,
             api_key_id=api_key.id,
             service_id=service.id,
-            subscription_id=subscription.id if subscription else None,
             endpoint_type=service.slug,
             request_params=payload,
             response_status=response_status,

@@ -11,7 +11,7 @@ from app.models.industry import Industry
 from app.models.category import Category
 from app.models.service import Service
 from app.models.service_industry import ServiceIndustry
-from app.models.subscription import Subscription, SubscriptionStatus
+from app.models.user_service_access import UserServiceAccess
 from app.models.transaction import Transaction, PaymentStatus
 from app.models.rc_mobile_data import RCMobileData
 from app.models.pan_data import PANData
@@ -41,8 +41,7 @@ __all__ = [
     "Category",
     "Service",
     "ServiceIndustry",
-    "Subscription",
-    "SubscriptionStatus",
+    "UserServiceAccess",
     "Transaction",
     "PaymentStatus",
     "RCMobileData",

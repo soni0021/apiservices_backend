@@ -120,7 +120,7 @@ async def init_db():
         # Import all models to ensure they're registered
         from app.models import (
             user, api_key, rc_data, licence_data, challan_data, usage_log,
-            industry, category, service, service_industry, subscription, transaction,
+            industry, category, service, service_industry, user_service_access, transaction,
             rc_mobile_data, pan_data, address_verification_data, fuel_price_data,
             gst_data, msme_data, udyam_data, voter_id_data, dl_challan_data
         )

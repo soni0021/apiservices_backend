@@ -42,17 +42,17 @@ async def seed_data():
         admin_user = admin_result.scalar_one_or_none()
         
         if not admin_user:
-            print("Creating admin user...")
-            admin_user = User(
-                email="admin@example.com",
-                password_hash=get_password_hash("admin123"),
-                full_name="Admin User",
-                phone="+91 9876543210",
-                role=UserRole.ADMIN,
-                status=UserStatus.ACTIVE
-            )
-            db.add(admin_user)
-            await db.flush()
+        print("Creating admin user...")
+        admin_user = User(
+            email="admin@example.com",
+            password_hash=get_password_hash("admin123"),
+            full_name="Admin User",
+            phone="+91 9876543210",
+            role=UserRole.ADMIN,
+            status=UserStatus.ACTIVE
+        )
+        db.add(admin_user)
+        await db.flush()
         else:
             print("Admin user already exists, skipping...")
         
@@ -61,17 +61,17 @@ async def seed_data():
         client_user = client_result.scalar_one_or_none()
         
         if not client_user:
-            print("Creating client user...")
-            client_user = User(
-                email="client@example.com",
-                password_hash=get_password_hash("client123"),
-                full_name="Client User",
-                phone="+91 9876543211",
-                role=UserRole.CLIENT,
-                status=UserStatus.ACTIVE
-            )
-            db.add(client_user)
-            await db.flush()
+        print("Creating client user...")
+        client_user = User(
+            email="client@example.com",
+            password_hash=get_password_hash("client123"),
+            full_name="Client User",
+            phone="+91 9876543211",
+            role=UserRole.CLIENT,
+            status=UserStatus.ACTIVE
+        )
+        db.add(client_user)
+        await db.flush()
         else:
             print("Client user already exists, skipping...")
         
@@ -83,23 +83,23 @@ async def seed_data():
         existing_key = api_key_result.scalar_one_or_none()
         
         if not existing_key:
-            print("Creating API key for client...")
+        print("Creating API key for client...")
             # Create API key for client with all services access
-            full_key, key_hash, key_prefix = generate_api_key("sk_live")
+        full_key, key_hash, key_prefix = generate_api_key("sk_live")
             encrypted_key = encrypt_api_key(full_key)
-            api_key = ApiKey(
-                user_id=client_user.id,
-                key_hash=key_hash,
-                key_prefix=key_prefix,
-                name="Test API Key",
+        api_key = ApiKey(
+            user_id=client_user.id,
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            name="Test API Key",
                 status=ApiKeyStatus.ACTIVE,
                 allowed_services=["*"],  # All services access
                 encrypted_key=encrypted_key
-            )
-            db.add(api_key)
-            await db.flush()
-            print(f"API Key created: {full_key}")
-            print("⚠️  SAVE THIS KEY - It won't be shown again!")
+        )
+        db.add(api_key)
+        await db.flush()
+        print(f"API Key created: {full_key}")
+        print("⚠️  SAVE THIS KEY - It won't be shown again!")
         else:
             print("API key already exists, skipping...")
         
@@ -109,9 +109,9 @@ async def seed_data():
         existing_rc = rc_result.scalar_one_or_none()
         
         if not existing_rc:
-            print("Creating dummy RC data...")
-            # Create dummy RC data
-            rc_data = RCData(
+        print("Creating dummy RC data...")
+        # Create dummy RC data
+        rc_data = RCData(
             reg_no="TR02AC1234",
             vi_status=1,
             status="ACTIVE",
@@ -157,8 +157,8 @@ async def seed_data():
             status_on="2024-07-30",
             data_source="db",
             fetched_at=datetime.utcnow()
-            )
-            db.add(rc_data)
+        )
+        db.add(rc_data)
         else:
             print("RC data already exists, skipping...")
         
@@ -167,9 +167,9 @@ async def seed_data():
         existing_licence = licence_result.scalar_one_or_none()
         
         if not existing_licence:
-            print("Creating dummy Licence data...")
-            # Create dummy Licence data
-            licence_data = LicenceData(
+        print("Creating dummy Licence data...")
+        # Create dummy Licence data
+        licence_data = LicenceData(
             dl_no="GJ0520210012345",
             error_cd=1,
             db_loc="database",
@@ -208,12 +208,12 @@ async def seed_data():
             om_office_townname="SURAT",
             data_source="db",
             fetched_at=datetime.utcnow()
-            )
-            db.add(licence_data)
-            await db.flush()
-            
-            # Add licence coverage
-            coverage = LicenceCoverage(
+        )
+        db.add(licence_data)
+        await db.flush()
+        
+        # Add licence coverage
+        coverage = LicenceCoverage(
             licence_id=licence_data.id,
             dl_no=licence_data.dl_no,
             cov_cd=4,
@@ -224,8 +224,8 @@ async def seed_data():
             issue_dt="17-Jul-2021",
             endorse_dt="17-Jul-2021",
             ola_name="RTO,SURAT"
-            )
-            db.add(coverage)
+        )
+        db.add(coverage)
         else:
             print("Licence data already exists, skipping...")
         
@@ -234,64 +234,64 @@ async def seed_data():
         existing_challan = challan_result.scalar_one_or_none()
         
         if not existing_challan:
-            print("Creating dummy Challan data...")
-            # Create dummy Challan data
-            challan_data = ChallanData(
-                vehicle_no="UP44BD0599",
-                total_paid_count=1,
-                total_pending_count=2,
-                total_physical_court_count=1,
-                total_virtual_court_count=0,
-                data_source="db",
-                fetched_at=datetime.utcnow()
-            )
-            db.add(challan_data)
-            await db.flush()
-            
-            # Add challan record
-            challan_record = ChallanRecord(
-                challan_data_id=challan_data.id,
-                reg_no="UP44BD0599",
-                violator_name="SURESH KUMAR",
-                dl_rc_no="UP44BD0599",
-                challan_no="UP235845240813192709",
-                challan_date="13-Aug-2024 19:27",
-                challan_amount=1000,
-                challan_status="Paid",
-                challan_payment_date="15-Aug-2024",
-                transaction_id="TXN123456789",
-                state="UP",
-                date="12-Sep-2024",
-                dpt_cd=1,
-                rto_cd=1191,
-                court_name="CJM PRAYAGRAJ",
-                court_address="prayagraj",
-                sent_to_court_on="28-Aug-2024 11:54",
-                designation="SI",
-                traffic_police=1,
-                vehicle_impound="No",
-                virtual_court_status=1,
-                court_status=1,
-                valid_contact_no=1,
-                office_name="Prayagraj",
-                area_name="BAH",
-                office_text="Prayagraj - BAH",
-                payment_eligible=2,
-                status_txt="Challan paid successfully",
-                payment_gateway=1,
-                physical_challan=0
-            )
-            db.add(challan_record)
-            await db.flush()
-            
-            # Add offence
-            offence = ChallanOffence(
-                challan_record_id=challan_record.id,
-                offence_name="Driving Two-wheeled without helmets",
-                mva="Section 194 D of MVA 1988 RW section 129 of CMVA",
-                penalty=1000
-            )
-            db.add(offence)
+        print("Creating dummy Challan data...")
+        # Create dummy Challan data
+        challan_data = ChallanData(
+            vehicle_no="UP44BD0599",
+            total_paid_count=1,
+            total_pending_count=2,
+            total_physical_court_count=1,
+            total_virtual_court_count=0,
+            data_source="db",
+            fetched_at=datetime.utcnow()
+        )
+        db.add(challan_data)
+        await db.flush()
+        
+        # Add challan record
+        challan_record = ChallanRecord(
+            challan_data_id=challan_data.id,
+            reg_no="UP44BD0599",
+            violator_name="SURESH KUMAR",
+            dl_rc_no="UP44BD0599",
+            challan_no="UP235845240813192709",
+            challan_date="13-Aug-2024 19:27",
+            challan_amount=1000,
+            challan_status="Paid",
+            challan_payment_date="15-Aug-2024",
+            transaction_id="TXN123456789",
+            state="UP",
+            date="12-Sep-2024",
+            dpt_cd=1,
+            rto_cd=1191,
+            court_name="CJM PRAYAGRAJ",
+            court_address="prayagraj",
+            sent_to_court_on="28-Aug-2024 11:54",
+            designation="SI",
+            traffic_police=1,
+            vehicle_impound="No",
+            virtual_court_status=1,
+            court_status=1,
+            valid_contact_no=1,
+            office_name="Prayagraj",
+            area_name="BAH",
+            office_text="Prayagraj - BAH",
+            payment_eligible=2,
+            status_txt="Challan paid successfully",
+            payment_gateway=1,
+            physical_challan=0
+        )
+        db.add(challan_record)
+        await db.flush()
+        
+        # Add offence
+        offence = ChallanOffence(
+            challan_record_id=challan_record.id,
+            offence_name="Driving Two-wheeled without helmets",
+            mva="Section 194 D of MVA 1988 RW section 129 of CMVA",
+            penalty=1000
+        )
+        db.add(offence)
         else:
             print("Challan data already exists, skipping...")
         
